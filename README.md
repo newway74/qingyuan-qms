@@ -99,7 +99,7 @@ graph TB
 
 ### 方式一：Windows 单机离线版（零依赖，演示最快）
 
-1. 在 [Releases 页面](https://github.com/newway74/qingyuan-qms/releases/latest)下载 `清源QMS_单机版_vX.Y.Z.zip`，**完整解压**到桌面/文档等普通文件夹（勿在压缩包预览或微信接收目录里直接运行）；
+1. 在 [Releases 页面](https://github.com/newway74/qingyuan-qms/releases/latest)下载 `QingyuanQMS_vX.Y.Z_windows_x64.zip`，**完整解压**到桌面/文档等普通文件夹（勿在压缩包预览或微信接收目录里直接运行）；
 2. 双击文件夹内 `清源QMS.exe`（首次运行会自动在桌面与开始菜单创建快捷方式），启动页分段显示初始化进度，约 20 秒后直接进入系统登录界面——**全程没有黑色命令行窗口**；
 3. 演示账号 `admin` / `Qms@Demo2026`；**关闭窗口即优雅停止全部内置服务并退出**（不驻留托盘、不自启），数据保存在程序目录 `data/` 文件夹。详细说明见包内 `使用说明.txt`。
 
