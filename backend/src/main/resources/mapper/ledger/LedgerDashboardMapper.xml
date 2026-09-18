@@ -1,0 +1,165 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.qms.modules.ledger.mapper.LedgerDashboardMapper">
+
+    <!-- 顶部卡片：商品总数 / 供应商总数 / 全流程记录数（已发生办理动作的节点）/ 资料缺口项总数 -->
+    <select id="selectCards" resultType="java.util.LinkedHashMap">
+        SELECT
+            (SELECT COUNT(1) FROM qc_ledger_goods WHERE deleted = 0) AS goodsTotal,
+            (SELECT COUNT(1) FROM qc_supplier WHERE deleted = 0) AS supplierTotal,
+            (SELECT COUNT(1) FROM qc_ledger_flow_node
+             WHERE deleted = 0 AND status &lt;&gt; 'NOT_STARTED') AS flowRecordTotal,
+            (SELECT COUNT(1) FROM qc_goods_material gm
+             INNER JOIN qc_material_item mi ON mi.id = gm.item_id AND mi.deleted = 0 AND mi.status = 1
+             WHERE gm.deleted = 0 AND gm.status IN ('MISSING','PENDING')) AS gapItemTotal
+    </select>
+
+    <!-- 过会状态分布（编码由 Service 转中文：YES 已过会 / PENDING 待定 / NO 不合作） -->
+    <select id="selectCooperateResultDist" resultType="java.util.LinkedHashMap">
+        SELECT cooperate_result AS code, COUNT(1) AS value
+        FROM qc_ledger_goods
+        WHERE deleted = 0
+        GROUP BY cooperate_result
+        ORDER BY value DESC
+    </select>
+
+    <!-- 当前节点分布：current_node_code 为空（全流程办结）的归入“已完成全流程” -->
+    <select id="selectCurrentNodeDist" resultType="java.util.LinkedHashMap">
+        SELECT
+            CASE WHEN g.current_node_code IS NULL OR g.current_node_code = ''
+                 THEN '已完成全流程'
+                 ELSE COALESCE(NULLIF(g.current_node_name, ''), g.current_node_code)
+            END AS name,
+            COUNT(1) AS value
+        FROM qc_ledger_goods g
+        WHERE g.deleted = 0
+        GROUP BY (CASE WHEN g.current_node_code IS NULL OR g.current_node_code = ''
+                       THEN '已完成全流程'
+                       ELSE COALESCE(NULLIF(g.current_node_name, ''), g.current_node_code) END)
+        ORDER BY value DESC
+    </select>
+
+    <!-- 一级品类分布（未建档品类的商品归入“未分类”） -->
+    <select id="selectCategoryDist" resultType="java.util.LinkedHashMap">
+        SELECT COALESCE(c1.name, '未分类') AS name, COUNT(1) AS value
+        FROM qc_ledger_goods g
+        LEFT JOIN qc_category c1 ON c1.id = g.category_l1_id AND c1.deleted = 0
+        WHERE g.deleted = 0
+        GROUP BY g.category_l1_id, c1.name
+        ORDER BY value DESC
+    </select>
+
+    <!-- 资料重点缺口明细：只含有缺口的商品，聚合其全部缺失/待确认资料项 -->
+    <select id="selectGapPage" resultType="com.qms.modules.ledger.vo.MaterialGapVO">
+        SELECT
+            g.id AS goodsId, g.sku, g.common_name AS commonName, g.brand,
+            c1.name AS categoryL1Name,
+            CASE WHEN g.current_node_code IS NULL OR g.current_node_code = ''
+                 THEN '已完成全流程' ELSE g.current_node_name END AS currentNodeName,
+            COUNT(gm.id) AS gapCount,
+            GROUP_CONCAT(CONCAT(gm.item_name, '|', gm.status) ORDER BY mi.sort, mi.id SEPARATOR ';;') AS gapItemsRaw
+        FROM qc_ledger_goods g
+        LEFT JOIN qc_category c1 ON c1.id = g.category_l1_id AND c1.deleted = 0
+        INNER JOIN qc_goods_material gm
+            ON gm.goods_id = g.id AND gm.deleted = 0 AND gm.status IN ('MISSING','PENDING')
+        INNER JOIN qc_material_item mi
+            ON mi.id = gm.item_id AND mi.deleted = 0 AND mi.status = 1
+        WHERE g.deleted = 0
+        <if test="keyword != null and keyword != ''">
+            AND (g.sku LIKE CONCAT('%', #{keyword}, '%')
+                 OR g.common_name LIKE CONCAT('%', #{keyword}, '%')
+                 OR g.brand LIKE CONCAT('%', #{keyword}, '%')
+                 OR g.manufacturer LIKE CONCAT('%', #{keyword}, '%'))
+        </if>
+        GROUP BY g.id, g.sku, g.common_name, g.brand, c1.name, g.current_node_code, g.current_node_name
+        ORDER BY gapCount DESC, g.id DESC
+    </select>
+
+    <!-- ============================ 报表导出 ============================ -->
+
+    <!-- 商品台账（含流程总览）导出，筛选条件与列表页一致 -->
+    <select id="selectGoodsForExport"
+            resultType="com.qms.modules.ledger.dto.GoodsLedgerExportRow">
+        SELECT
+            g.sku, g.common_name AS commonName, g.spec, g.manufacturer AS manufacturer,
+            g.approval_no AS approvalNo, g.upc, g.brand,
+            c1.name AS categoryL1Name, c2.name AS categoryL2Name,
+            DATE_FORMAT(g.meeting_date, '%Y-%m-%d') AS meetingDate,
+            CASE g.cooperate_result WHEN 'YES' THEN '合作' WHEN 'NO' THEN '不合作' ELSE '待定' END AS cooperateResult,
+            DATE_FORMAT(g.launch_date, '%Y-%m-%d') AS launchDate,
+            CASE WHEN g.current_node_code IS NULL OR g.current_node_code = ''
+                 THEN '已完成全流程' ELSE g.current_node_name END AS currentNodeName,
+            (SELECT COUNT(1) FROM qc_goods_material gm2
+             INNER JOIN qc_material_item mi2 ON mi2.id = gm2.item_id AND mi2.deleted = 0 AND mi2.status = 1
+             WHERE gm2.goods_id = g.id AND gm2.deleted = 0 AND gm2.status IN ('MISSING','PENDING')) AS gapCount,
+            CASE g.data_source WHEN 'DEMO' THEN '演示' ELSE '录入' END AS dataSource,
+            g.remark
+        FROM qc_ledger_goods g
+        LEFT JOIN qc_category c1 ON c1.id = g.category_l1_id AND c1.deleted = 0
+        LEFT JOIN qc_category c2 ON c2.id = g.category_l2_id AND c2.deleted = 0
+        <where>
+            g.deleted = 0
+            <if test="keyword != null and keyword != ''">
+                AND (g.sku LIKE CONCAT('%', #{keyword}, '%')
+                     OR g.common_name LIKE CONCAT('%', #{keyword}, '%')
+                     OR g.brand LIKE CONCAT('%', #{keyword}, '%')
+                     OR g.manufacturer LIKE CONCAT('%', #{keyword}, '%'))
+            </if>
+            <if test="categoryL1Id != null">AND g.category_l1_id = #{categoryL1Id}</if>
+            <if test="categoryL2Id != null">AND g.category_l2_id = #{categoryL2Id}</if>
+            <if test="cooperateResult != null and cooperateResult != ''">
+                AND g.cooperate_result = #{cooperateResult}
+            </if>
+            <if test="currentNodeCode != null and currentNodeCode != ''">
+                AND g.current_node_code = #{currentNodeCode}
+            </if>
+        </where>
+        ORDER BY g.updated_at DESC, g.id DESC
+    </select>
+
+    <!-- 全流程记录导出：商品 × 节点一行（节点记录为模板快照，自带节点名称/排序，不依赖模板定义） -->
+    <select id="selectFlowRecordsForExport"
+            resultType="com.qms.modules.ledger.dto.FlowRecordExportRow">
+        SELECT
+            g.sku, g.common_name AS commonName, c1.name AS categoryL1Name,
+            n.node_sort AS nodeSort, n.node_name AS nodeName,
+            CASE n.status WHEN 'DONE' THEN '已完成'
+                         WHEN 'IN_PROGRESS' THEN '进行中'
+                         WHEN 'REJECTED' THEN '不通过'
+                         ELSE '未开始' END AS status,
+            DATE_FORMAT(n.finish_date, '%Y-%m-%d') AS finishDate,
+            n.owner_name AS ownerName,
+            s.supplier_name AS supplierName,
+            n.conclusion, n.remark
+        FROM qc_ledger_flow f
+        INNER JOIN qc_ledger_goods g ON g.id = f.goods_id AND g.deleted = 0
+        INNER JOIN qc_ledger_flow_node n ON n.flow_id = f.id AND n.deleted = 0
+        LEFT JOIN qc_category c1 ON c1.id = g.category_l1_id AND c1.deleted = 0
+        LEFT JOIN qc_supplier s ON s.id = n.supplier_id AND s.deleted = 0
+        WHERE f.deleted = 0
+        ORDER BY g.id, n.node_sort, n.id
+    </select>
+
+    <!-- 资料缺口清单导出：商品 × 缺口项平铺 -->
+    <select id="selectGapsForExport"
+            resultType="com.qms.modules.ledger.dto.MaterialGapExportRow">
+        SELECT
+            g.sku, g.common_name AS commonName, g.brand,
+            c1.name AS categoryL1Name,
+            CASE WHEN g.current_node_code IS NULL OR g.current_node_code = ''
+                 THEN '已完成全流程' ELSE g.current_node_name END AS currentNodeName,
+            gm.item_name AS itemName,
+            CASE gm.status WHEN 'PENDING' THEN '待确认' ELSE '缺失' END AS status,
+            gm.remark
+        FROM qc_ledger_goods g
+        LEFT JOIN qc_category c1 ON c1.id = g.category_l1_id AND c1.deleted = 0
+        INNER JOIN qc_goods_material gm
+            ON gm.goods_id = g.id AND gm.deleted = 0 AND gm.status IN ('MISSING','PENDING')
+        INNER JOIN qc_material_item mi
+            ON mi.id = gm.item_id AND mi.deleted = 0 AND mi.status = 1
+        WHERE g.deleted = 0
+        ORDER BY g.id, mi.sort, mi.id
+    </select>
+
+</mapper>

@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.qms.modules.ledger.mapper.LedgerGoodsMapper">
+
+    <!-- 商品台账分页：关键字匹配 SKU/通用名/品牌/生产企业；品类/结论/当前节点筛选 -->
+    <select id="selectGoodsPage" resultType="com.qms.modules.ledger.vo.GoodsListVO">
+        SELECT
+            g.id, g.sku, g.common_name, g.spec, g.manufacturer, g.approval_no, g.upc,
+            g.brand, g.category_l1_id, g.category_l2_id,
+            c1.name AS category_l1_name, c2.name AS category_l2_name,
+            g.meeting_date, g.cooperate_result, g.launch_date,
+            g.current_node_code, g.current_node_name,
+            g.template_id, g.template_version, g.npi_project_id,
+            g.data_source, g.remark, g.created_at, g.updated_at,
+            (SELECT COUNT(1) FROM qc_goods_material gm
+             INNER JOIN qc_material_item mi ON mi.id = gm.item_id AND mi.deleted = 0 AND mi.status = 1
+             WHERE gm.goods_id = g.id AND gm.deleted = 0
+               AND gm.status IN ('MISSING','PENDING')) AS gap_count
+        FROM qc_ledger_goods g
+        LEFT JOIN qc_category c1 ON c1.id = g.category_l1_id AND c1.deleted = 0
+        LEFT JOIN qc_category c2 ON c2.id = g.category_l2_id AND c2.deleted = 0
+        <where>
+            g.deleted = 0
+            <if test="keyword != null and keyword != ''">
+                AND (
+                    g.sku LIKE CONCAT('%', #{keyword}, '%')
+                    OR g.common_name LIKE CONCAT('%', #{keyword}, '%')
+                    OR g.brand LIKE CONCAT('%', #{keyword}, '%')
+                    OR g.manufacturer LIKE CONCAT('%', #{keyword}, '%')
+                )
+            </if>
+            <if test="categoryL1Id != null">
+                AND g.category_l1_id = #{categoryL1Id}
+            </if>
+            <if test="categoryL2Id != null">
+                AND g.category_l2_id = #{categoryL2Id}
+            </if>
+            <if test="cooperateResult != null and cooperateResult != ''">
+                AND g.cooperate_result = #{cooperateResult}
+            </if>
+            <if test="currentNodeCode != null and currentNodeCode != ''">
+                AND g.current_node_code = #{currentNodeCode}
+            </if>
+        </where>
+        ORDER BY g.updated_at DESC, g.id DESC
+    </select>
+
+</mapper>

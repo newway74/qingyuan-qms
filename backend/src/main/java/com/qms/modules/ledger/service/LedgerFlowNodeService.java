@@ -1,0 +1,229 @@
+package com.qms.modules.ledger.service;
+
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.qms.common.exception.BizException;
+import com.qms.common.result.ResultCode;
+import com.qms.modules.ledger.LedgerConst;
+import com.qms.modules.ledger.dto.NodeRecordUpsertRequest;
+import com.qms.modules.ledger.entity.FlowNodeDef;
+import com.qms.modules.ledger.entity.FlowNodeFieldDef;
+import com.qms.modules.ledger.entity.LedgerFlowNode;
+import com.qms.modules.ledger.entity.LedgerGoods;
+import com.qms.modules.ledger.mapper.FlowNodeDefMapper;
+import com.qms.modules.ledger.mapper.FlowNodeFieldDefMapper;
+import com.qms.modules.ledger.mapper.LedgerFlowNodeMapper;
+import com.qms.modules.masterdata.entity.Supplier;
+import com.qms.modules.masterdata.mapper.SupplierMapper;
+import lombok.RequiredArgsConstructor;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+
+/**
+ * 商品全流程节点记录服务：节点办理结果录入、必填校验、当前节点自动推进。
+ * 节点行在建档时已由模板快照生成，本服务只做更新，不做新增/删除。
+ */
+@Service
+@RequiredArgsConstructor
+public class LedgerFlowNodeService {
+
+    private static final Set<String> NODE_STATUS = Set.of(
+            LedgerConst.NODE_NOT_STARTED,
+            LedgerConst.NODE_IN_PROGRESS,
+            LedgerConst.NODE_DONE,
+            LedgerConst.NODE_REJECTED);
+
+    private final LedgerFlowNodeMapper flowNodeMapper;
+    private final FlowNodeDefMapper nodeDefMapper;
+    private final FlowNodeFieldDefMapper fieldDefMapper;
+    private final SupplierMapper supplierMapper;
+    private final LedgerGoodsService goodsService;
+    private final ObjectMapper objectMapper;
+
+    /**
+     * 更新某商品的某个节点记录。
+     * 规则：
+     * 1) 状态仅允许四值；已完成/不通过必须填完成日期与结论，且模板标记必填的自定义字段不能为空；
+     * 2) 仅节点定义允许关联供应商时才保存供应商，供应商必须在主数据中存在；
+     * 3) 保存后按节点顺序重算商品“当前节点”：第一个非“已完成”的节点（不通过同样阻塞流程），
+     *    全部完成则当前节点置空（流程完结）。
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public void updateNode(Long goodsId, String nodeCode, NodeRecordUpsertRequest request) {
+        LedgerGoods goods = goodsService.getRequired(goodsId);
+
+        LedgerFlowNode node = flowNodeMapper.selectOne(new LambdaQueryWrapper<LedgerFlowNode>()
+                .eq(LedgerFlowNode::getGoodsId, goodsId)
+                .eq(LedgerFlowNode::getNodeCode, nodeCode));
+        if (node == null) {
+            throw new BizException(ResultCode.DATA_NOT_FOUND, "流程节点不存在：" + nodeCode);
+        }
+
+        String status = request.getStatus().trim();
+        if (!NODE_STATUS.contains(status)) {
+            throw new BizException(ResultCode.PARAM_INVALID, "节点状态不合法：" + status);
+        }
+
+        Long supplierId = request.getSupplierId();
+        if (supplierId != null) {
+            if (node.getLinkSupplier() == null || node.getLinkSupplier() != 1) {
+                // 该节点按模板定义不关联供应商，忽略入参，避免前端串改
+                supplierId = null;
+            } else {
+                Supplier supplier = supplierMapper.selectById(supplierId);
+                if (supplier == null) {
+                    throw new BizException(ResultCode.PARAM_INVALID, "关联供应商不存在或已被删除");
+                }
+            }
+        }
+
+        // 取该商品绑定模板版本的节点字段定义，保证录入项与建档时快照一致
+        FlowNodeDef def = goods.getTemplateId() == null ? null
+                : nodeDefMapper.selectOne(new LambdaQueryWrapper<FlowNodeDef>()
+                .eq(FlowNodeDef::getTemplateId, goods.getTemplateId())
+                .eq(FlowNodeDef::getNodeCode, nodeCode));
+        List<FlowNodeFieldDef> fieldDefs = def == null ? List.of()
+                : fieldDefMapper.selectList(new LambdaQueryWrapper<FlowNodeFieldDef>()
+                .eq(FlowNodeFieldDef::getNodeDefId, def.getId())
+                .orderByAsc(FlowNodeFieldDef::getSort));
+
+        Map<String, Object> normalizedValues = normalizeFieldValues(fieldDefs, request.getFieldValues());
+
+        boolean finished = LedgerConst.NODE_DONE.equals(status)
+                || LedgerConst.NODE_REJECTED.equals(status);
+        if (finished) {
+            if (request.getFinishDate() == null) {
+                throw new BizException(ResultCode.PARAM_INVALID,
+                        "节点状态为“" + nodeLabel(status) + "”时，完成日期必填");
+            }
+            if (request.getConclusion() == null || request.getConclusion().isBlank()) {
+                throw new BizException(ResultCode.PARAM_INVALID, "节点办结时必须填写结论");
+            }
+            for (FlowNodeFieldDef fieldDef : fieldDefs) {
+                if (fieldDef.getRequired() != null && fieldDef.getRequired() == 1) {
+                    Object value = normalizedValues.get(fieldDef.getFieldCode());
+                    if (value == null || value.toString().isBlank()) {
+                        throw new BizException(ResultCode.PARAM_INVALID,
+                                "字段【" + fieldDef.getFieldName() + "】为必填项");
+                    }
+                }
+            }
+        }
+
+        node.setStatus(status);
+        // 回到“未开始”时清掉完成日期与结论，避免步骤条与实际数据矛盾
+        boolean notStarted = LedgerConst.NODE_NOT_STARTED.equals(status);
+        node.setFinishDate(notStarted ? null : request.getFinishDate());
+        node.setOwnerName(trimToNull(request.getOwnerName()));
+        node.setConclusion(notStarted ? null : trimToNull(request.getConclusion()));
+        node.setRemark(trimToNull(request.getRemark()));
+        node.setSupplierId(supplierId);
+        node.setFieldValues(goodsService.writeFieldValues(normalizedValues));
+        // 必须显式 set：MyBatis-Plus updateById 默认忽略 null 字段，
+        // 会导致“回退未开始”无法清空完成日期/结论、无法解除供应商关联
+        flowNodeMapper.update(null, new LambdaUpdateWrapper<LedgerFlowNode>()
+                .eq(LedgerFlowNode::getId, node.getId())
+                .set(LedgerFlowNode::getStatus, node.getStatus())
+                .set(LedgerFlowNode::getFinishDate, node.getFinishDate())
+                .set(LedgerFlowNode::getOwnerName, node.getOwnerName())
+                .set(LedgerFlowNode::getConclusion, node.getConclusion())
+                .set(LedgerFlowNode::getRemark, node.getRemark())
+                .set(LedgerFlowNode::getSupplierId, node.getSupplierId())
+                .set(LedgerFlowNode::getFieldValues, node.getFieldValues()));
+
+        advanceCurrentNode(goodsId, goods);
+    }
+
+    /** 节点状态中文（仅用于报错文案） */
+    private String nodeLabel(String status) {
+        return LedgerConst.NODE_DONE.equals(status) ? "已完成" : "不通过";
+    }
+
+    /**
+     * 规范化自定义字段值：丢弃模板未定义的字段编码；SELECT 校验取值在选项内；
+     * DATE/TEXT/TEXTAREA/CONCLUSION/FILE 统一按字符串落库。
+     */
+    private Map<String, Object> normalizeFieldValues(List<FlowNodeFieldDef> fieldDefs,
+                                                     Map<String, Object> rawValues) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        if (rawValues == null || rawValues.isEmpty()) {
+            return result;
+        }
+        Map<String, FlowNodeFieldDef> defByCode = new LinkedHashMap<>();
+        for (FlowNodeFieldDef f : fieldDefs) {
+            defByCode.put(f.getFieldCode(), f);
+        }
+        for (Map.Entry<String, Object> entry : rawValues.entrySet()) {
+            FlowNodeFieldDef fieldDef = defByCode.get(entry.getKey());
+            if (fieldDef == null) {
+                // 模板外字段不入业务库，防止脏数据
+                continue;
+            }
+            Object raw = entry.getValue();
+            if (raw == null) {
+                continue;
+            }
+            String value = raw.toString().trim();
+            if (value.isEmpty()) {
+                continue;
+            }
+            if ("SELECT".equals(fieldDef.getFieldType()) || "CONCLUSION".equals(fieldDef.getFieldType())) {
+                List<String> options = readOptions(fieldDef.getOptionsJson());
+                // 结论类型使用系统固定三选项
+                if ("CONCLUSION".equals(fieldDef.getFieldType())) {
+                    options = List.of("通过", "不通过", "待整改");
+                }
+                if (!options.contains(value)) {
+                    throw new BizException(ResultCode.PARAM_INVALID,
+                            "字段【" + fieldDef.getFieldName() + "】取值不在允许的选项内：" + value);
+                }
+            }
+            result.put(fieldDef.getFieldCode(), value);
+        }
+        return result;
+    }
+
+    private List<String> readOptions(String json) {
+        if (json == null || json.isBlank()) {
+            return List.of();
+        }
+        try {
+            return objectMapper.readValue(json, new TypeReference<List<String>>() {
+            });
+        } catch (Exception e) {
+            return List.of();
+        }
+    }
+
+    /**
+     * 重算当前节点：按顺序第一个非“已完成”节点（未开始/进行中/不通过均停留），全部完成则置空。
+     * 不通过节点保持当前定位，业务人员整改后重新办结即可继续向后推进。
+     */
+    private void advanceCurrentNode(Long goodsId, LedgerGoods goods) {
+        List<LedgerFlowNode> all = flowNodeMapper.selectList(new LambdaQueryWrapper<LedgerFlowNode>()
+                .eq(LedgerFlowNode::getGoodsId, goodsId)
+                .orderByAsc(LedgerFlowNode::getNodeSort));
+        LedgerFlowNode current = all.stream()
+                .filter(n -> !LedgerConst.NODE_DONE.equals(n.getStatus()))
+                .findFirst()
+                .orElse(null);
+        goods.setCurrentNodeCode(current == null ? null : current.getNodeCode());
+        goods.setCurrentNodeName(current == null ? null : current.getNodeName());
+        goodsService.updateCurrentNode(goods);
+    }
+
+    private String trimToNull(String value) {
+        if (value == null) {
+            return null;
+        }
+        String t = value.trim();
+        return t.isEmpty() ? null : t;
+    }
+}

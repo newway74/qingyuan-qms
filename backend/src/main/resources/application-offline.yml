@@ -1,0 +1,37 @@
+# 单机离线版 profile：包内便携 MariaDB + Redis，固定非默认端口避免与本机其他服务冲突
+server:
+  port: ${APP_PORT:18080}
+
+spring:
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://${DB_HOST:127.0.0.1}:${DB_PORT:13306}/${DB_NAME:qms_offline}?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&createDatabaseIfNotExist=true&connectTimeout=5000&socketTimeout=30000&tcpKeepAlive=true
+    username: ${DB_USER:root}
+    # 单机便携库 root 默认为空密码（仅监听 127.0.0.1）；与启动器保持一致，不依赖环境变量即可启动
+    password: ${DB_PASSWORD:}
+  data:
+    redis:
+      host: ${REDIS_HOST:127.0.0.1}
+      port: ${REDIS_PORT:16379}
+      password: ${REDIS_PASSWORD:}
+      database: 0
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: true
+    encoding: UTF-8
+
+# 前端静态目录（启动器注入绝对路径；默认相对 jar 工作目录）
+qms:
+  web:
+    static-dir: ${WEB_STATIC_DIR:./static}
+  # 单机版：开放守护进程诊断端点（业务探针 + 线程栈快照），仅回环可调
+  diag:
+    enabled: true
+
+logging:
+  file:
+    name: ${LOG_FILE:../logs/backend.log}
+  level:
+    com.qms: INFO
+    org.flywaydb: INFO

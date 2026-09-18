@@ -1,0 +1,64 @@
+# ===== Java / Maven =====
+backend/target/
+*.class
+*.jar
+*.war
+*.log
+boot*.log
+**/site/
+**/failsafe-reports/
+*.exec
+hs_err_pid*
+
+# ===== Node / 前端 =====
+node_modules/
+**/node_modules/
+frontend/dist/
+frontend/.vite/
+*.tsbuildinfo
+frontend/vite.config.js
+frontend/vite.config.d.ts
+
+# ===== 单机离线版打包产物（体积大，含 runtime/数据库数据） =====
+offline-dist/
+offline-build/build/
+offline-build/dist/
+offline-build/__pycache__/
+*.pyc
+# 便携运行时（JRE/MariaDB/Redis，数百 MB，随安装包分发但不入库）
+runtime/
+**/runtime/
+# 交付压缩包
+*.zip
+
+# ===== 运行期数据与日志 =====
+data/
+logs/
+**/data/
+**/logs/
+
+# ===== 密钥与环境变量（仅保留 .env.example） =====
+.env
+*.pem
+*.key
+
+# ===== IDE =====
+.idea/
+.vscode/
+*.iml
+*.ipr
+*.iws
+.settings/
+.project
+.classpath
+
+# ===== 操作系统 =====
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ===== 临时文件 =====
+*.tmp
+*.bak
+*.swp
+*~

@@ -1,0 +1,135 @@
+server:
+  port: 8080
+  servlet:
+    context-path: /
+  tomcat:
+    uri-encoding: UTF-8
+    # 工作线程收敛：防止下游（DB/Redis）抖动时线程被无限堆积耗尽，导致静态页也打不开
+    threads:
+      max: 150
+      min-spare: 10
+    # 连接器接受连接后，等待请求行/请求头的超时（毫秒）
+    connection-timeout: 15000
+    # 等待队列：超过 maxThreads 后最多排队 100 个，再多直接拒绝（快速失败优于无限堆积）
+    accept-count: 100
+    max-connections: 400
+    keep-alive:
+      timeout: 30s
+      max-requests: 200
+
+spring:
+  application:
+    name: qingyuan-qms
+  profiles:
+    active: ${SPRING_PROFILES_ACTIVE:dev}
+  jackson:
+    date-format: yyyy-MM-dd HH:mm:ss
+    time-zone: GMT+8
+    default-property-inclusion: non_null
+  servlet:
+    multipart:
+      max-file-size: 20MB
+      max-request-size: 50MB
+  # ====== 数据库连接池（HikariCP）通用加固，各 profile 只需覆盖 url/账号 ======
+  datasource:
+    hikari:
+      pool-name: QmsHikariPool
+      # 单机版并发很低，10 连接足够；过小会在报表导出等场景排队，过大则放大 DB 压力
+      maximum-pool-size: 10
+      minimum-idle: 2
+      # 获取连接最多等 10 秒，拿不到立即失败（默认 30s 太长，会把请求线程全拖死）
+      connection-timeout: 10000
+      # 连接存活校验超时
+      validation-timeout: 3000
+      # 空闲连接 10 分钟回收
+      idle-timeout: 600000
+      # 连接最长寿命 25 分钟，必须小于数据库 wait_timeout（库侧已配 1 小时）
+      max-lifetime: 1500000
+      # 每 5 分钟主动保活一次，避免闲置后拿到半死连接
+      keepalive-time: 300000
+      # 连接借出超过 30 秒未归还即打印泄漏堆栈（含借出位置），让连接泄漏在日志中现形
+      leak-detection-threshold: 30000
+      connection-test-query: SELECT 1
+  # ====== Redis（Lettuce）通用加固：命令必须有超时，绝不允许无限等待 ======
+  data:
+    redis:
+      # 单次命令 3 秒超时：Redis 卡顿时请求快速失败（配合业务层降级），而不是排队拖垮全站
+      timeout: 3s
+      connect-timeout: 2s
+      lettuce:
+        shutdown-timeout: 2s
+
+mybatis-plus:
+  mapper-locations: classpath*:/mapper/**/*.xml
+  type-aliases-package: com.qms.modules.**.entity
+  configuration:
+    map-underscore-to-camel-case: true
+  global-config:
+    banner: false
+    db-config:
+      id-type: ASSIGN_ID
+      logic-delete-field: deleted
+      logic-delete-value: 1
+      logic-not-delete-value: 0
+
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+    tags-sorter: alpha
+    operations-sorter: method
+  api-docs:
+    path: /v3/api-docs
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      # 单机版守护进程依据健康状态自愈，展示 DB/Redis 分项便于现场排查
+      show-details: always
+      probes:
+        enabled: true
+
+# ====== 业务自定义配置 ======
+qms:
+  jwt:
+    # JWT 签名密钥：无内置默认值，必须通过环境变量 QMS_JWT_SECRET 注入（随机字符串，>=32 字节）。
+    # prod 环境缺失将直接拒绝启动；dev/offline 等本地环境缺失时使用代码内置的一次性开发密钥兜底（仅限本地）。
+    secret: ${QMS_JWT_SECRET:}
+    # 访问令牌有效期（秒）默认 2 小时
+    access-token-ttl: 7200
+    # 刷新令牌有效期（秒）默认 7 天
+    refresh-token-ttl: 604800
+    issuer: qingyuan-qms
+  attachment:
+    max-size-mb: 20
+    allowed-ext: jpg,jpeg,png,webp,pdf
+  storage:
+    # local=本地磁盘（开箱即用）；minio=MinIO 对象存储；后续可切 oss
+    provider: ${STORAGE_PROVIDER:local}
+    local:
+      dir: ${STORAGE_LOCAL_DIR:./data/attachments}
+    minio:
+      endpoint: ${MINIO_ENDPOINT:http://localhost:9000}
+      access-key: ${MINIO_ACCESS_KEY:minioadmin}
+      secret-key: ${MINIO_SECRET_KEY:minioadmin}
+      bucket: ${MINIO_BUCKET:qingyuan-qms}
+  integration:
+    # local=本地占位；remote=对接公司中台（阶段6补实现）
+    sso: local
+    product: local
+    purchase: local
+  datascope:
+    enabled: true
+  # ====== 定时预警（Spring Scheduling，后续可平滑切换 XXL-Job） ======
+  alert:
+    # 阈值
+    sla-warning-hours: ${ALERT_SLA_WARNING_HOURS:24}
+    retain-warning-days: ${ALERT_RETAIN_WARNING_DAYS:30}
+    license-warning-days: ${ALERT_LICENSE_WARNING_DAYS:60}
+    batch-warning-days: ${ALERT_BATCH_WARNING_DAYS:30}
+    # cron（6 位，Quartz 风格：秒 分 时 日 月 周）
+    sla-cron: ${ALERT_SLA_CRON:0 0 * * * ?}
+    daily-cron: ${ALERT_DAILY_CRON:0 30 8 * * ?}

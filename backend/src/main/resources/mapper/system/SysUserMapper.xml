@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.qms.modules.system.mapper.SysUserMapper">
+
+    <select id="selectRoleCodesByUserId" resultType="java.lang.String">
+        SELECT r.code
+        FROM sys_role r
+        INNER JOIN sys_user_role ur ON ur.role_id = r.id
+        WHERE ur.user_id = #{userId}
+          AND r.status = 1
+          AND r.deleted = 0
+    </select>
+
+    <select id="selectPermCodesByUserId" resultType="java.lang.String">
+        SELECT DISTINCT p.perm_code
+        FROM sys_permission p
+        INNER JOIN sys_role_permission rp ON rp.permission_id = p.id
+        INNER JOIN sys_user_role ur ON ur.role_id = rp.role_id
+        INNER JOIN sys_role r ON r.id = ur.role_id
+        WHERE ur.user_id = #{userId}
+          AND p.perm_code IS NOT NULL
+          AND p.deleted = 0
+          AND r.status = 1
+          AND r.deleted = 0
+    </select>
+
+    <select id="selectActiveUsersByRoleCode" resultType="com.qms.modules.system.entity.SysUser">
+        SELECT u.*
+        FROM sys_user u
+        INNER JOIN sys_user_role ur ON ur.user_id = u.id
+        INNER JOIN sys_role r ON r.id = ur.role_id
+        WHERE r.code = #{roleCode}
+          AND r.status = 1
+          AND r.deleted = 0
+          AND u.status = 1
+          AND u.deleted = 0
+        ORDER BY u.id
+    </select>
+
+    <select id="selectDataScopeByUserId" resultType="java.lang.String">
+        SELECT
+            CASE
+                WHEN SUM(r.data_scope = 'ALL') > 0 THEN 'ALL'
+                WHEN SUM(r.data_scope = 'DEPT') > 0 THEN 'DEPT'
+                WHEN SUM(r.data_scope = 'BRAND') > 0 THEN 'BRAND'
+                WHEN SUM(r.data_scope = 'CATEGORY') > 0 THEN 'CATEGORY'
+                ELSE 'ALL'
+            END AS scope
+        FROM sys_role r
+        INNER JOIN sys_user_role ur ON ur.role_id = r.id
+        WHERE ur.user_id = #{userId}
+          AND r.status = 1
+          AND r.deleted = 0
+    </select>
+
+</mapper>

@@ -1,0 +1,29 @@
+# 集成测试环境：独立测试库（不存在自动创建），Flyway 从空库全量迁移+种子；
+# Redis 使用独立 db15 并在用例启动前 FLUSHDB；附件写 target 下临时目录。
+spring:
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://${MYSQL_HOST:localhost}:${MYSQL_PORT:3306}/qms_test?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&createDatabaseIfNotExist=true&connectTimeout=5000&socketTimeout=30000&tcpKeepAlive=true
+    username: ${MYSQL_USER:root}
+    password: ${MYSQL_PASSWORD:root123}
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      database: 15
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: true
+    encoding: UTF-8
+
+qms:
+  storage:
+    provider: local
+    local:
+      dir: ./target/test-data/attachments
+
+logging:
+  level:
+    com.qms: WARN
